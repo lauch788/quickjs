@@ -310,6 +310,7 @@ struct JSRuntime {
 
 struct JSClass {
     uint32_t class_id; /* 0 means free entry */
+    uint32_t parent_class_id;
     JSAtom class_name;
     JSClassFinalizer *finalizer;
     JSClassGCMark *gc_mark;
@@ -1099,7 +1100,7 @@ static JSValue js_compile_regexp(JSContext *ctx, JSValueConst pattern,
 static JSValue js_regexp_constructor_internal(JSContext *ctx, JSValueConst ctor,
                                               JSValue pattern, JSValue bc);
 static void gc_decref(JSRuntime *rt);
-static int JS_NewClass1(JSRuntime *rt, JSClassID class_id,
+static int JS_NewClass1(JSRuntime *rt, JSClassID class_id, JSClassID parent_class_id,
                         const JSClassDef *class_def, JSAtom name);
 
 typedef enum JSStrictEqModeEnum {
@@ -1506,7 +1507,7 @@ static int init_class_range(JSRuntime *rt, JSClassShortDef const *tab,
         memset(cm, 0, sizeof(*cm));
         cm->finalizer = tab[i].finalizer;
         cm->gc_mark = tab[i].gc_mark;
-        if (JS_NewClass1(rt, class_id, cm, tab[i].class_name) < 0)
+        if (JS_NewClass1(rt, class_id, 0, cm, tab[i].class_name) < 0)
             return -1;
     }
     return 0;
@@ -3390,7 +3391,7 @@ BOOL JS_IsRegisteredClass(JSRuntime *rt, JSClassID class_id)
 
 /* create a new object internal class. Return -1 if error, 0 if
    OK. The finalizer can be NULL if none is needed. */
-static int JS_NewClass1(JSRuntime *rt, JSClassID class_id,
+static int JS_NewClass1(JSRuntime *rt, JSClassID class_id, JSClassID parent_class_id,
                         const JSClassDef *class_def, JSAtom name)
 {
     int new_size, i;
@@ -3431,6 +3432,7 @@ static int JS_NewClass1(JSRuntime *rt, JSClassID class_id,
     }
     cl = &rt->class_array[class_id];
     cl->class_id = class_id;
+    cl->parent_class_id = parent_class_id;
     cl->class_name = JS_DupAtomRT(rt, name);
     cl->finalizer = class_def->finalizer;
     cl->gc_mark = class_def->gc_mark;
@@ -3439,7 +3441,8 @@ static int JS_NewClass1(JSRuntime *rt, JSClassID class_id,
     return 0;
 }
 
-int JS_NewClass(JSRuntime *rt, JSClassID class_id, const JSClassDef *class_def)
+int JS_NewClassExtended(JSRuntime *rt, JSClassID class_id, JSClassID parent_class_id,
+                        const JSClassDef *class_def)
 {
     int ret, len;
     JSAtom name;
@@ -3451,9 +3454,14 @@ int JS_NewClass(JSRuntime *rt, JSClassID class_id, const JSClassDef *class_def)
         if (name == JS_ATOM_NULL)
             return -1;
     }
-    ret = JS_NewClass1(rt, class_id, class_def, name);
+    ret = JS_NewClass1(rt, class_id, parent_class_id, class_def, name);
     JS_FreeAtomRT(rt, name);
     return ret;
+}
+
+int JS_NewClass(JSRuntime *rt, JSClassID class_id, const JSClassDef *class_def)
+{
+  return JS_NewClassExtended(rt, class_id, 0, class_def);
 }
 
 static JSValue js_new_string8(JSContext *ctx, const uint8_t *buf, int len)
@@ -9812,6 +9820,22 @@ void *JS_GetOpaque2(JSContext *ctx, JSValueConst obj, JSClassID class_id)
         JS_ThrowTypeErrorInvalidClass(ctx, class_id);
     }
     return p;
+}
+
+void *JS_GetOpaqueExtended(JSContext *ctx, JSValueConst obj, JSClassID class_id)
+{
+    JSObject *p;
+    JSRuntime *rt = ctx->rt;
+
+    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT)
+        return NULL;
+    p = JS_VALUE_GET_OBJ(obj);
+    for (const JSClass *cl = &rt->class_array[p->class_id];
+         cl->parent_class_id != 0;
+         cl = &rt->class_array[cl->parent_class_id])
+      if (cl->class_id == class_id)
+        return p->u.opaque;
+    return NULL;
 }
 
 #define HINT_STRING  0
